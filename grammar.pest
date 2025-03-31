@@ -1,0 +1,38 @@
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT = _{ "//" ~ (!"\n" ~ ANY)* ~ "\n" | "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+
+// Main program structure
+program = { SOI ~ ( function_def)* ~ EOI }
+
+// Function definition
+function_def = { "fn" ~ identifier ~ "(" ~ param_list ~ ")" ~ "{" ~ expr ~ "}"}
+param_list = { (identifier ~ ("," ~ identifier)*)? }
+
+// Expressions
+expr = { add_expr }
+
+// Addition and subtraction
+add_expr = { mul_expr ~ (add_op ~ mul_expr)* }
+add_op = { "+" | "-" }
+
+// Multiplication and division
+mul_expr = { primary ~ (mul_op ~ primary)* }
+mul_op = { "*" | "/" }
+
+// Primary expressions
+primary = {
+    integer |
+    function_call |
+    identifier |
+    "(" ~ expr ~ ")"
+}
+
+// Function call
+function_call = { identifier ~ "(" ~ argument_list ~ ")" }
+argument_list = { (expr ~ ("," ~ expr)*)? }
+
+// Terminals
+identifier = @{namespaced_identifier | regular_identifier }
+regular_identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+namespaced_identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~ "::" ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")*}
+integer = @{ ASCII_DIGIT+ }
