@@ -48,57 +48,68 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Check an expression for type errors
     fn check_expression(&mut self, expr_idx: AstIdx) -> Result<()> {
         match self.ast_pool[expr_idx] {
             Ast::Integer(_) => Ok(()),
-
             Ast::ParamRef(_) => Ok(()),
+            Ast::PrimitiveFunc(_) => Ok(()),
+            Ast::UserFunc(name_idx) => {
+                let func_name = self.ast_pool.get_string(name_idx).to_string();
 
-            Ast::PrimitiveFunctionCall { func, child_count } => {
-                match func {
-                    PrimitiveFunc::Add | PrimitiveFunc::Multiply => {
-                        if child_count != 2 {
-                            let func_name = match func {
-                                PrimitiveFunc::Add => "add",
-                                PrimitiveFunc::Multiply => "multiply",
-                            };
-
-                            return Err(CheckerError::InvalidPrimitiveArgCount(
-                                func_name.to_string(),
-                                child_count,
-                            ));
-                        }
-                    }
-                }
-
-                if let Some(children) = self.ast_pool.children(expr_idx) {
-                    for child_idx in children {
-                        self.check_expression(child_idx)?;
-                    }
+                if !self.function_param_counts.contains_key(&name_idx) {
+                    return Err(CheckerError::UndefinedFunction(func_name));
                 }
 
                 Ok(())
             }
 
-            Ast::UserFunctionCall {
-                name_idx,
+            Ast::Call {
+                func_idx,
                 child_count,
             } => {
-                let func_name = self.ast_pool.get_string(name_idx).to_string();
+                self.check_expression(func_idx)?;
 
-                if let Some(&expected_count) = self.function_param_counts.get(&name_idx) {
-                    if expected_count != child_count {
-                        return Err(CheckerError::ArgumentCountMismatch {
-                            name: func_name,
-                            expected: expected_count,
-                            actual: child_count,
-                        });
+                match self.ast_pool[func_idx] {
+                    Ast::PrimitiveFunc(func) => match func {
+                        PrimitiveFunc::Add | PrimitiveFunc::Multiply => {
+                            if child_count != 2 {
+                                let func_name = match func {
+                                    PrimitiveFunc::Add => "add",
+                                    PrimitiveFunc::Multiply => "multiply",
+                                };
+
+                                return Err(CheckerError::InvalidPrimitiveArgCount(
+                                    func_name.to_string(),
+                                    child_count,
+                                ));
+                            }
+                        }
+                    },
+
+                    Ast::UserFunc(name_idx) => {
+                        let func_name = self.ast_pool.get_string(name_idx).to_string();
+
+                        if let Some(&expected_count) = self.function_param_counts.get(&name_idx) {
+                            if expected_count != child_count {
+                                return Err(CheckerError::ArgumentCountMismatch {
+                                    name: func_name,
+                                    expected: expected_count,
+                                    actual: child_count,
+                                });
+                            }
+                        } else {
+                            return Err(CheckerError::UndefinedFunction(func_name));
+                        }
                     }
-                } else {
-                    return Err(CheckerError::UndefinedFunction(func_name));
+
+                    _ => {
+                        return Err(CheckerError::InternalError(
+                            "Cannot call non-function expression".to_string(),
+                        ));
+                    }
                 }
 
+                // Check all the children (arguments)
                 if let Some(children) = self.ast_pool.children(expr_idx) {
                     for child_idx in children {
                         self.check_expression(child_idx)?;

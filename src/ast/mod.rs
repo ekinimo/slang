@@ -13,12 +13,10 @@ pub use self::primitives::PrimitiveFunc;
 pub enum Ast {
     Integer(i64),
     ParamRef(ParamIdx),
-    PrimitiveFunctionCall {
-        func: PrimitiveFunc,
-        child_count: usize,
-    },
-    UserFunctionCall {
-        name_idx: NameIdx,
+    PrimitiveFunc(PrimitiveFunc),
+    UserFunc(NameIdx),
+    Call {
+        func_idx: AstIdx,
         child_count: usize,
     },
     FunctionDef {

@@ -94,14 +94,68 @@ impl<'a> PrettyPrinter<'a> {
                 }
             }
 
-            Ast::PrimitiveFunctionCall { func, .. } => {
+            Ast::PrimitiveFunc(func) => {
+                output.push_str(match func {
+                    PrimitiveFunc::Add => "add",
+                    PrimitiveFunc::Multiply => "multiply",
+                });
+            }
+
+            Ast::UserFunc(name_idx) => {
+                let func_name = self.pool.get_string(name_idx);
+                output.push_str(func_name);
+            }
+
+            Ast::Call { func_idx, .. } => {
                 let children = self.pool.children(node_idx).unwrap_or_default();
 
-                if children.len() != 2 {
-                    output.push_str(match func {
-                        PrimitiveFunc::Add => "add",
-                        PrimitiveFunc::Multiply => "multiply",
-                    });
+                if let Ast::PrimitiveFunc(func) = self.pool[func_idx] {
+                    {
+                        if children.len() != 2 {
+                            // For non-binary primitive calls, use function call syntax
+                            output.push_str(match func {
+                                PrimitiveFunc::Add => "add",
+                                PrimitiveFunc::Multiply => "multiply",
+                            });
+                            output.push('(');
+
+                            for (i, &child) in children.iter().enumerate() {
+                                if i > 0 {
+                                    output.push_str(", ");
+                                }
+                                self.print_node_to_string(child, indent_level, output);
+                            }
+
+                            output.push(')');
+                        } else {
+                            output.push('(');
+
+                            self.print_node_to_string(children[0], indent_level, output);
+
+                            output.push_str(match func {
+                                PrimitiveFunc::Add => {
+                                    if self.config.spaces_around_operators {
+                                        " + "
+                                    } else {
+                                        "+"
+                                    }
+                                }
+                                PrimitiveFunc::Multiply => {
+                                    if self.config.spaces_around_operators {
+                                        " * "
+                                    } else {
+                                        "*"
+                                    }
+                                }
+                            });
+
+                            self.print_node_to_string(children[1], indent_level, output);
+
+                            output.push(')');
+                        }
+                    }
+                } else {
+                    self.print_node_to_string(func_idx, indent_level, output);
                     output.push('(');
 
                     for (i, &child) in children.iter().enumerate() {
@@ -112,49 +166,7 @@ impl<'a> PrettyPrinter<'a> {
                     }
 
                     output.push(')');
-                } else {
-                    output.push('(');
-
-                    self.print_node_to_string(children[0], indent_level, output);
-
-                    output.push_str(match func {
-                        PrimitiveFunc::Add => {
-                            if self.config.spaces_around_operators {
-                                " + "
-                            } else {
-                                "+"
-                            }
-                        }
-                        PrimitiveFunc::Multiply => {
-                            if self.config.spaces_around_operators {
-                                " * "
-                            } else {
-                                "*"
-                            }
-                        }
-                    });
-
-                    self.print_node_to_string(children[1], indent_level, output);
-
-                    output.push(')');
                 }
-            }
-
-            Ast::UserFunctionCall { name_idx, .. } => {
-                let func_name = self.pool.get_string(name_idx);
-                let children = self.pool.children(node_idx).unwrap_or_default();
-
-                output.push_str(func_name);
-                output.push('(');
-
-                for (i, &child) in children.iter().enumerate() {
-                    if i > 0 {
-                        output.push_str(", ");
-                    }
-                    self.print_node_to_string(child, indent_level, output);
-                }
-
-                output.push(')');
             }
 
             Ast::FunctionDef {

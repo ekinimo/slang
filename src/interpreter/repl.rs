@@ -341,7 +341,7 @@ impl Interpreter {
                     move |mem: &mut Vec<Value>, _: usize| {
                         // Push arguments to memory
                         for arg in &arg_values {
-                            mem.push(*arg);
+                            mem.push(arg.clone());
                         }
                     },
                     0,
