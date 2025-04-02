@@ -12,9 +12,17 @@ pub use self::primitives::PrimitiveFunc;
 #[derive(Debug, Clone, Copy)]
 pub enum Ast {
     Integer(i64),
-    ParamRef(ParamIdx),
+    ParamRef {
+        name: NameIdx,
+        level: usize,
+        offset: ParamIdx,
+    },
     PrimitiveFunc(PrimitiveFunc),
     UserFunc(NameIdx),
+    Lambda {
+        param_count: usize,
+        body_idx: AstIdx,
+    },
     Call {
         func_idx: AstIdx,
         child_count: usize,

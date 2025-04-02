@@ -12,11 +12,10 @@ use super::Ast;
 #[derive(Debug)]
 pub struct AstPool {
     nodes: Vec<Ast>,
+
     string_pool: Vec<String>,
     string_map: HashMap<String, NameIdx>,
     pub function_defs: HashMap<NameIdx, AstIdx>,
-    parameter_names: HashMap<(NameIdx, ParamIdx), NameIdx>,
-    current_function: RefCell<Option<(NameIdx, usize)>>,
 }
 
 impl AstPool {
@@ -65,49 +64,12 @@ impl AstPool {
         }
     }
 
-    pub fn register_param_name(
-        &mut self,
-        func_name_idx: NameIdx,
-        param_idx: ParamIdx,
-        param_name: &str,
-    ) {
-        let param_name_idx = self.intern_string(param_name);
-        self.parameter_names
-            .insert((func_name_idx, param_idx), param_name_idx);
-    }
-
-    pub fn get_param_name(&self, func_name_idx: NameIdx, param_idx: ParamIdx) -> Option<&str> {
-        self.parameter_names
-            .get(&(func_name_idx, param_idx))
-            .map(|&name_idx| self.get_string(name_idx))
-    }
-
-    pub fn set_function_context(&self, func_name_idx: NameIdx) {
-        if let Some(&ast_idx) = self.function_defs.get(&func_name_idx) {
-            if let Ast::FunctionDef { param_count, .. } = self[ast_idx] {
-                *self.current_function.borrow_mut() = Some((func_name_idx, param_count));
-            }
-        }
-    }
-
-    /// Clear the current function context
-    pub fn clear_function_context(&self) {
-        *self.current_function.borrow_mut() = None;
-    }
-
-    /// Get the current function context
-    pub fn current_function_context(&self) -> Option<(NameIdx, usize)> {
-        *self.current_function.borrow()
-    }
-
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),
             string_pool: Vec::new(),
             string_map: HashMap::new(),
             function_defs: HashMap::new(),
-            parameter_names: HashMap::new(),
-            current_function: RefCell::new(None),
         }
     }
 
@@ -132,12 +94,23 @@ impl AstPool {
         node_idx
     }
 
-    pub fn add_param_ref(&mut self, param_idx: usize) -> AstIdx {
+    pub fn add_param_ref(&mut self, name: NameIdx, level: usize, offset: usize) -> AstIdx {
         let node_idx = AstIdx(self.nodes.len());
-        self.nodes.push(Ast::ParamRef(ParamIdx(param_idx)));
+        self.nodes.push(Ast::ParamRef {
+            name,
+            level,
+            offset: ParamIdx(offset),
+        });
         node_idx
     }
-
+    pub fn add_lambda(&mut self, param_count: usize, body_idx: AstIdx) -> AstIdx {
+        let node_idx = AstIdx(self.nodes.len());
+        self.nodes.push(Ast::Lambda {
+            param_count,
+            body_idx,
+        });
+        node_idx
+    }
     pub fn add_primitive_func(&mut self, func: PrimitiveFunc) -> AstIdx {
         let node_idx = AstIdx(self.nodes.len());
         self.nodes.push(Ast::PrimitiveFunc(func));
@@ -194,7 +167,7 @@ impl AstPool {
 
     pub fn len(&self, idx: AstIdx) -> usize {
         match self[idx] {
-            Ast::PrimitiveFunc(_) | Ast::UserFunc(_) | Ast::Integer(_) | Ast::ParamRef(_) => 1,
+            Ast::PrimitiveFunc(_) | Ast::UserFunc(_) | Ast::Integer(_) | Ast::ParamRef { .. } => 1,
             Ast::Call { func_idx, .. } => {
                 let mut total = 1 + self.len(func_idx);
                 if let Some(children) = self.children(idx) {
@@ -205,7 +178,7 @@ impl AstPool {
 
                 total
             }
-            Ast::FunctionDef { .. } => {
+            Ast::Lambda { .. } | Ast::FunctionDef { .. } => {
                 1 + if let Some(children) = self.children(idx) {
                     children.iter().map(|&child| self.len(child)).sum()
                 } else {
@@ -217,7 +190,9 @@ impl AstPool {
 
     pub fn children(&self, idx: AstIdx) -> Option<Vec<AstIdx>> {
         match self[idx] {
-            Ast::UserFunc(_) | Ast::PrimitiveFunc(_) | Ast::Integer(_) | Ast::ParamRef(_) => None,
+            Ast::UserFunc(_) | Ast::PrimitiveFunc(_) | Ast::Integer(_) | Ast::ParamRef { .. } => {
+                None
+            }
 
             Ast::Call {
                 func_idx,
@@ -236,7 +211,9 @@ impl AstPool {
                 Some(children)
             }
 
-            Ast::FunctionDef { body_idx, .. } => Some(vec![body_idx]),
+            Ast::FunctionDef { body_idx, .. } | Ast::Lambda { body_idx, .. } => {
+                Some(vec![body_idx])
+            }
         }
     }
 
@@ -256,8 +233,16 @@ impl AstPool {
                 Ast::Integer(val) => {
                     println!("{}: Integer({})", i, val)
                 }
-                Ast::ParamRef(param_idx) => {
-                    println!("{}: ParamRef({})", i, param_idx.0)
+                Ast::ParamRef {
+                    name,
+                    level,
+                    offset,
+                } => {
+                    let name = self.get_string(*name);
+                    println!(
+                        "{}: ParamRef{{name: {} level: {} offset: {}}}",
+                        i, name, level, offset.0
+                    )
                 }
                 Ast::PrimitiveFunc(func) => {
                     let func_name = match func {
@@ -297,6 +282,15 @@ impl AstPool {
                         i, name_idx.0, name, param_count, body_idx.0
                     )
                 }
+                Ast::Lambda {
+                    param_count,
+                    body_idx,
+                } => {
+                    println!(
+                        "{}: Lambda {{ param_count: {}, body_idx: {} }}",
+                        i, param_count, body_idx.0
+                    )
+                }
             }
         }
 
@@ -317,101 +311,7 @@ impl AstPool {
     }
 
     pub fn import_file<P: AsRef<Path>>(&mut self, file_path: P) -> Result<(), String> {
-        let path_str = file_path.as_ref().to_string_lossy().to_string();
-        let file_stem = file_path
-            .as_ref()
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| format!("Invalid file path: {}", path_str))?;
-
-        let content = std::fs::read_to_string(file_path.as_ref())
-            .map_err(|e| format!("Failed to read file '{}': {}", path_str, e))?;
-
-        let mut temp_pool = AstPool::new();
-        let parse_result = crate::parser::parser::parse_program(&content, &mut temp_pool);
-
-        match parse_result {
-            Ok(_) => {
-                let base_offset = self.nodes.len();
-                let mut idx_mapping = HashMap::new();
-                for i in 0..temp_pool.nodes.len() {
-                    idx_mapping.insert(AstIdx(i), AstIdx(base_offset + i));
-                }
-                let mut name_idx_mapping = HashMap::new();
-                for (i, name) in temp_pool.string_pool.iter().enumerate() {
-                    let old_name_idx = NameIdx(i);
-                    let is_function_name = temp_pool
-                        .function_defs
-                        .iter()
-                        .any(|(&name_idx, _)| name_idx == old_name_idx);
-                    let new_name = if is_function_name {
-                        format!("{}::{}", file_stem, name)
-                    } else {
-                        name.clone()
-                    };
-
-                    let new_name_idx = self.intern_string(&new_name);
-                    name_idx_mapping.insert(old_name_idx, new_name_idx);
-                }
-                self.nodes
-                    .extend(temp_pool.nodes.iter().map(|node| match node {
-                        Ast::FunctionDef {
-                            name_idx,
-                            param_count,
-                            body_idx,
-                        } => {
-                            let new_body_idx = idx_mapping.get(body_idx).unwrap_or(body_idx);
-                            let new_name_idx = name_idx_mapping.get(name_idx).unwrap_or(name_idx);
-                            Ast::FunctionDef {
-                                name_idx: *new_name_idx,
-                                param_count: *param_count,
-                                body_idx: *new_body_idx,
-                            }
-                        }
-                        Ast::UserFunc(name_idx) => {
-                            let func_name = temp_pool.get_string(*name_idx);
-                            let is_local_function =
-                                temp_pool.function_defs.iter().any(|(&fn_name_idx, _)| {
-                                    temp_pool.get_string(fn_name_idx) == func_name
-                                });
-                            if is_local_function {
-                                let new_name_idx =
-                                    name_idx_mapping.get(name_idx).unwrap_or(name_idx);
-                                Ast::UserFunc(*new_name_idx)
-                            } else {
-                                Ast::UserFunc(*name_idx)
-                            }
-                        }
-                        _ => node.clone(),
-                    }));
-
-                for (&old_name_idx, &old_ast_idx) in &temp_pool.function_defs {
-                    let new_name_idx = name_idx_mapping[&old_name_idx];
-                    let new_ast_idx = idx_mapping[&old_ast_idx];
-                    self.function_defs.insert(new_name_idx, new_ast_idx);
-
-                    if let Ast::FunctionDef { param_count, .. } = temp_pool[old_ast_idx] {
-                        for param_idx in 0..param_count {
-                            let key = (old_name_idx, ParamIdx(param_idx));
-                            if let Some(&param_name_idx) = temp_pool.parameter_names.get(&key) {
-                                let new_param_name_idx =
-                                    *name_idx_mapping.entry(param_name_idx).or_insert_with(|| {
-                                        self.intern_string(temp_pool.get_string(param_name_idx))
-                                    });
-
-                                self.parameter_names.insert(
-                                    (new_name_idx, ParamIdx(param_idx)),
-                                    new_param_name_idx,
-                                );
-                            }
-                        }
-                    }
-                }
-
-                Ok(())
-            }
-            Err(e) => Err(format!("Parse error: {}", e)),
-        }
+        todo!("not impl yet")
     }
 }
 

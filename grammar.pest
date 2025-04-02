@@ -6,7 +6,7 @@ program = { SOI ~ ( function_def)* ~ EOI }
 
 // Function definition
 function_def = { "fn" ~ identifier ~ "(" ~ param_list ~ ")" ~ "{" ~ expr ~ "}"}
-param_list = { (identifier ~ ("," ~ identifier)*)? }
+param_list = { "(" ~ ")" | (identifier ~ ("," ~ identifier)*)? }
 
 // Expressions
 expr = { add_expr }
@@ -21,14 +21,20 @@ mul_op = { "*" | "/" }
 
 // Primary expressions
 primary = {
-    integer |
+    lambda |
     function_call |
     identifier |
+    integer |
     "(" ~ expr ~ ")"
 }
 
+lambda = {
+       "lambda" ~ identifier* ~ "{" ~ expr ~ "}"
+}
+
+
 // Function call
-function_call = { identifier ~ "(" ~ argument_list ~ ")" }
+function_call = { identifier ~ ("(" ~ argument_list ~ ")")+ }
 argument_list = { (expr ~ ("," ~ expr)*)? }
 
 // Terminals

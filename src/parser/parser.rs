@@ -6,15 +6,59 @@ use std::collections::HashMap;
 use super::error::{error_with_location, ParserError, Result};
 use crate::ast::indices::AstIdx;
 use crate::ast::pool::AstPool;
-use crate::ParamIdx;
+use crate::{NameIdx, ParamIdx};
 
 #[derive(Parser)]
 #[grammar = "grammar.pest"] // Update path to grammar file
 pub struct LanguageParser;
 
+#[derive(Clone)]
+struct Scope {
+    // Maps parameter names to their (level, offset) data
+    variables: HashMap<String, (usize, (usize, NameIdx))>,
+    parent: Option<Box<Scope>>,
+    level: usize,
+}
+
+impl Scope {
+    fn new() -> Self {
+        Self {
+            variables: HashMap::new(),
+            parent: None,
+            level: 0,
+        }
+    }
+
+    fn create_child(&self) -> Self {
+        Self {
+            variables: HashMap::new(),
+            parent: Some(Box::new(self.clone())),
+            level: self.level + 1,
+        }
+    }
+
+    fn add_param(&mut self, name: &str, offset: usize, name_idx: NameIdx) {
+        self.variables
+            .insert(name.to_string(), (offset, (self.level, name_idx)));
+    }
+
+    fn lookup(&self, name: &str) -> Option<(usize, (usize, NameIdx))> {
+        if let Some((offset, level_info)) = self.variables.get(name) {
+            return Some((*offset, *level_info));
+        }
+
+        if let Some(parent) = &self.parent {
+            return parent.lookup(name);
+        }
+
+        None
+    }
+}
+
 pub fn parse_program(input: &str, pool: &mut AstPool) -> Result<Vec<AstIdx>> {
     let pairs = LanguageParser::parse(Rule::program, input)?;
     let mut top_level_nodes = Vec::new();
+    let mut scope = Scope::new();
 
     for pair in pairs {
         match pair.as_rule() {
@@ -22,7 +66,7 @@ pub fn parse_program(input: &str, pool: &mut AstPool) -> Result<Vec<AstIdx>> {
                 for inner_pair in pair.into_inner() {
                     match inner_pair.as_rule() {
                         Rule::function_def => {
-                            let function_def = parse_function_def(inner_pair, pool)?;
+                            let function_def = parse_function_def(inner_pair, pool, &mut scope)?;
                             top_level_nodes.push(function_def);
                         }
                         Rule::EOI => {}
@@ -38,7 +82,11 @@ pub fn parse_program(input: &str, pool: &mut AstPool) -> Result<Vec<AstIdx>> {
     Ok(top_level_nodes)
 }
 
-fn parse_function_def(pair: Pair<Rule>, pool: &mut AstPool) -> Result<AstIdx> {
+fn parse_function_def(
+    pair: Pair<Rule>,
+    pool: &mut AstPool,
+    parent_scope: &mut Scope,
+) -> Result<AstIdx> {
     let input = pair.as_str();
     let span = pair.as_span();
     let mut inner_pairs = pair.into_inner();
@@ -77,37 +125,44 @@ fn parse_function_def(pair: Pair<Rule>, pool: &mut AstPool) -> Result<AstIdx> {
         ));
     }
 
-    // Collect and validate parameters
-    let params: Vec<String> = param_list
-        .into_inner()
-        .map(|pair| {
-            if pair.as_rule() != Rule::identifier {
-                return Err(error_with_location(
-                    input,
-                    pair.as_span(),
-                    &format!("Expected parameter name but found {:?}", pair.as_rule()),
-                ));
-            }
-            Ok(pair.as_str().to_string())
-        })
-        .collect::<Result<Vec<String>>>()?;
+    // Create a new scope for this function's parameters
+    let mut function_scope = parent_scope.create_child();
 
-    // Check for duplicate parameter names
+    // Collect and validate parameters
+    let param_pairs: Vec<Pair<Rule>> = param_list.into_inner().collect();
     let mut seen_params = HashMap::new();
-    for (i, param) in params.iter().enumerate() {
-        if let Some(prev_idx) = seen_params.get(param) {
+
+    for (i, param_pair) in param_pairs.iter().enumerate() {
+        if param_pair.as_rule() != Rule::identifier {
+            return Err(error_with_location(
+                input,
+                param_pair.as_span(),
+                &format!(
+                    "Expected parameter name but found {:?}",
+                    param_pair.as_rule()
+                ),
+            ));
+        }
+
+        let param_name = param_pair.as_str();
+
+        if let Some(prev_idx) = seen_params.get(param_name) {
             return Err(error_with_location(
                 input,
                 span,
                 &format!(
                     "Duplicate parameter name '{}' at positions {} and {}",
-                    param,
+                    param_name,
                     prev_idx + 1,
                     i + 1
                 ),
             ));
         }
-        seen_params.insert(param, i);
+        seen_params.insert(param_name, i);
+
+        // Add parameter to function scope
+        let param_name_idx = pool.intern_string(param_name);
+        function_scope.add_param(param_name, i, param_name_idx);
     }
 
     // Get function body
@@ -126,23 +181,13 @@ fn parse_function_def(pair: Pair<Rule>, pool: &mut AstPool) -> Result<AstIdx> {
         ));
     }
 
-    // Create a scope for parameter references
-    let mut param_map = HashMap::new();
-    for (i, param) in params.iter().enumerate() {
-        param_map.insert(param.clone(), i);
-        pool.register_param_name(func_name_idx, ParamIdx(i), param);
-    }
+    // Parse the function body using the function scope
+    let body_idx = parse_expr(expr_pair, pool, &function_scope)?;
 
-    let body_idx = parse_expr(expr_pair, pool, &param_map)?;
-
-    Ok(pool.add_function_def(func_name, params.len(), body_idx))
+    Ok(pool.add_function_def(func_name, param_pairs.len(), body_idx))
 }
 
-fn parse_expr(
-    pair: Pair<Rule>,
-    pool: &mut AstPool,
-    param_map: &HashMap<String, usize>,
-) -> Result<AstIdx> {
+fn parse_expr(pair: Pair<Rule>, pool: &mut AstPool, scope: &Scope) -> Result<AstIdx> {
     let input = pair.as_str();
     let span = pair.as_span();
 
@@ -152,10 +197,10 @@ fn parse_expr(
             let inner = pair.into_inner().next().ok_or_else(|| {
                 error_with_location(input, span, "Empty expression where a value was expected")
             })?;
-            parse_expr(inner, pool, param_map)
+            parse_expr(inner, pool, scope)
         }
-        Rule::add_expr => parse_binary_expr(pair, pool, param_map),
-        Rule::mul_expr => parse_binary_expr(pair, pool, param_map),
+        Rule::add_expr => parse_binary_expr(pair, pool, scope),
+        Rule::mul_expr => parse_binary_expr(pair, pool, scope),
         Rule::primary => {
             let inner = pair.into_inner().next().ok_or_else(|| {
                 error_with_location(input, span, "Empty expression where a value was expected")
@@ -177,8 +222,9 @@ fn parse_expr(
                     let name = inner.as_str();
                     let id_span = inner.as_span();
 
-                    if let Some(&param_idx) = param_map.get(name) {
-                        Ok(pool.add_param_ref(param_idx))
+                    if let Some((offset, (level, name_idx))) = scope.lookup(name) {
+                        // Using updated ParamRef with name, level, and offset
+                        Ok(pool.add_param_ref(name_idx, level, offset))
                     } else {
                         Err(error_with_location(
                             input,
@@ -187,8 +233,9 @@ fn parse_expr(
                         ))
                     }
                 }
-                Rule::function_call => parse_function_call(inner, pool, param_map),
-                Rule::expr => parse_expr(inner, pool, param_map),
+                Rule::function_call => parse_function_call(inner, pool, scope),
+                Rule::lambda => parse_lambda(inner, pool, scope),
+                Rule::expr => parse_expr(inner, pool, scope),
                 _ => Err(error_with_location(
                     input,
                     inner.as_span(),
@@ -204,11 +251,52 @@ fn parse_expr(
     }
 }
 
-fn parse_binary_expr(
-    pair: Pair<Rule>,
-    pool: &mut AstPool,
-    param_map: &HashMap<String, usize>,
-) -> Result<AstIdx> {
+fn parse_lambda(pair: Pair<Rule>, pool: &mut AstPool, parent_scope: &Scope) -> Result<AstIdx> {
+    let input = pair.as_str();
+    let span = pair.as_span();
+    let mut pairs = pair.into_inner();
+
+    // Create a new scope for lambda parameters
+    let mut lambda_scope = parent_scope.create_child();
+
+    // Collect lambda parameters
+    let mut param_count = 0;
+    while pairs
+        .peek()
+        .map_or(false, |p| p.as_rule() == Rule::identifier)
+    {
+        let param_pair = pairs.next().unwrap();
+        let param_name = param_pair.as_str();
+        let param_name_idx = pool.intern_string(param_name);
+
+        // Add parameter to lambda scope
+        lambda_scope.add_param(param_name, param_count, param_name_idx);
+        param_count += 1;
+    }
+
+    // Parse lambda body
+    let body_pair = pairs
+        .next()
+        .ok_or_else(|| error_with_location(input, span, "Lambda expression is missing a body"))?;
+
+    if body_pair.as_rule() != Rule::expr {
+        return Err(error_with_location(
+            input,
+            body_pair.as_span(),
+            &format!(
+                "Expected expression in lambda body but found {:?}",
+                body_pair.as_rule()
+            ),
+        ));
+    }
+
+    let body_idx = parse_expr(body_pair, pool, &lambda_scope)?;
+
+    // Create the lambda node
+    Ok(pool.add_lambda(param_count, body_idx))
+}
+
+fn parse_binary_expr(pair: Pair<Rule>, pool: &mut AstPool, scope: &Scope) -> Result<AstIdx> {
     let input = pair.as_str();
     let span = pair.as_span();
     let mut pairs = pair.into_inner();
@@ -218,7 +306,7 @@ fn parse_binary_expr(
         error_with_location(input, span, "Binary expression is missing its left operand")
     })?;
 
-    let mut left = parse_expr(first, pool, param_map)?;
+    let mut left = parse_expr(first, pool, scope)?;
 
     // If there are no operators, just return the first operand
     if pairs.peek().is_none() {
@@ -248,7 +336,7 @@ fn parse_binary_expr(
             )
         })?;
 
-        let right = parse_expr(right_operand, pool, param_map)?;
+        let right = parse_expr(right_operand, pool, scope)?;
 
         // Create the appropriate operation based on the operator
         match op_str {
@@ -278,11 +366,7 @@ fn parse_binary_expr(
     Ok(left)
 }
 
-fn parse_function_call(
-    pair: Pair<Rule>,
-    pool: &mut AstPool,
-    param_map: &HashMap<String, usize>,
-) -> Result<AstIdx> {
+fn parse_function_call(pair: Pair<Rule>, pool: &mut AstPool, scope: &Scope) -> Result<AstIdx> {
     let input = pair.as_str();
     let span = pair.as_span();
     let mut pairs = pair.into_inner();
@@ -321,7 +405,7 @@ fn parse_function_call(
     // Parse each argument
     let mut args = Vec::new();
     for arg_pair in args_pair.into_inner() {
-        let arg_idx = parse_expr(arg_pair, pool, param_map)?;
+        let arg_idx = parse_expr(arg_pair, pool, scope)?;
         args.push(arg_idx);
     }
 

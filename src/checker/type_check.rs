@@ -51,7 +51,7 @@ impl<'a> TypeChecker<'a> {
     fn check_expression(&mut self, expr_idx: AstIdx) -> Result<()> {
         match self.ast_pool[expr_idx] {
             Ast::Integer(_) => Ok(()),
-            Ast::ParamRef(_) => Ok(()),
+            Ast::ParamRef { .. } => Ok(()),
             Ast::PrimitiveFunc(_) => Ok(()),
             Ast::UserFunc(name_idx) => {
                 let func_name = self.ast_pool.get_string(name_idx).to_string();
@@ -120,6 +120,10 @@ impl<'a> TypeChecker<'a> {
             }
 
             Ast::FunctionDef { body_idx, .. } => self.check_expression(body_idx),
+            Ast::Lambda {
+                param_count,
+                body_idx,
+            } => Ok(()),
         }
     }
 }

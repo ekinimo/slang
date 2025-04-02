@@ -37,7 +37,7 @@ impl CompiledFunctions {
                 0,
             )),
 
-            Ast::ParamRef(i) => Some(CompiledFunction::new(
+            Ast::ParamRef { offset: i, .. } => Some(CompiledFunction::new(
                 move |mem: &mut Vec<Value>, param_base: usize| {
                     let val = mem[param_base + i.0].clone();
                     mem.push(val);
@@ -144,6 +144,10 @@ impl CompiledFunctions {
                     param_count,
                 ))
             }
+            Ast::Lambda {
+                param_count,
+                body_idx,
+            } => todo!(),
         }
     }
 
