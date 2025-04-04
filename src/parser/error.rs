@@ -1,7 +1,6 @@
-use pest::Parser;
-use thiserror::Error;
 use pest::error::Error as PestError;
 use pest::Span;
+use thiserror::Error;
 
 use super::parser::Rule;
 

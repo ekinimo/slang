@@ -1,4 +1,4 @@
-use pest::iterators::{Pair, Pairs};
+use pest::iterators::Pair;
 use pest::Parser;
 use pest_derive::Parser;
 use std::collections::HashMap;
@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use super::error::{error_with_location, ParserError, Result};
 use crate::ast::indices::AstIdx;
 use crate::ast::pool::AstPool;
-use crate::{NameIdx, ParamIdx};
+use crate::NameIdx;
 
 #[derive(Parser)]
 #[grammar = "grammar.pest"] // Update path to grammar file
@@ -338,18 +338,19 @@ fn parse_binary_expr(pair: Pair<Rule>, pool: &mut AstPool, scope: &Scope) -> Res
 
         let right = parse_expr(right_operand, pool, scope)?;
 
+        // Fix: Calculate the length properly - it should be the length of this expression
+        let left_len = pool.len(left);
+        let right_len = pool.len(right);
+        let total_len = left_len + right_len + 1; // +1 for the operation itself
+
         // Create the appropriate operation based on the operator
         match op_str {
             "+" => {
-                // We need to create a new node for the addition
-                // Note: in AstPool, we need to add children before the parent
-                left = pool.add_add(2);
+                left = pool.add_add(right, total_len);
             }
-
             "*" => {
-                left = pool.add_multiply(2);
+                left = pool.add_multiply(right, total_len);
             }
-
             _ => {
                 return Err(error_with_location(
                     input,
@@ -389,26 +390,38 @@ fn parse_function_call(pair: Pair<Rule>, pool: &mut AstPool, scope: &Scope) -> R
 
     let func_name = identifier.as_str();
 
-    // Get argument list
-    let args_pair = pairs.next().ok_or_else(|| {
-        error_with_location(input, span, "Function call is missing argument list")
-    })?;
+    let mut func_idx = 0.into();
+    let mut args_arglen_argstart = Vec::new();
 
-    if args_pair.as_rule() != Rule::argument_list {
-        return Err(error_with_location(
-            input,
-            args_pair.as_span(),
-            &format!("Expected argument list but found {:?}", args_pair.as_rule()),
-        ));
+    let old_len = pool.nodes.len();
+
+    for (i, args_pair) in pairs.enumerate() {
+        if args_pair.as_rule() != Rule::argument_list {
+            return Err(error_with_location(
+                input,
+                args_pair.as_span(),
+                &format!("Expected argument list but found {:?}", args_pair.as_rule()),
+            ));
+        }
+        let mut arg = 0;
+
+        for arg_pair in args_pair.into_inner() {
+            let arg_idx = parse_expr(arg_pair, pool, scope)?;
+            println!("Argument: {:?} - {:?}", arg_idx, &pool[arg_idx]);
+
+            arg += 1;
+        }
+        let curr_len = pool.nodes.len();
+
+        args_arglen_argstart.push((arg, curr_len - old_len, AstIdx(curr_len - 1)));
     }
 
-    // Parse each argument
-    let mut args = Vec::new();
-    for arg_pair in args_pair.into_inner() {
-        let arg_idx = parse_expr(arg_pair, pool, scope)?;
-        args.push(arg_idx);
+    for (i, (a, alen, astart)) in args_arglen_argstart.iter().enumerate() {
+        if i == 0 {
+            func_idx = pool.add_function_call(func_name, *astart, *a, *alen + 1);
+        } else {
+            func_idx = pool.add_lambda_call(func_idx, *astart, *a, *alen + 1);
+        }
     }
-
-    // Add the function call with the correct number of arguments
-    Ok(pool.add_function_call(func_name, args.len()))
+    Ok(func_idx)
 }

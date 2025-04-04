@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::ast::indices::{AstIdx, NameIdx, ParamIdx};
+use crate::ast::indices::{AstIdx, NameIdx};
 use crate::ast::pool::AstPool;
 use crate::ast::primitives::PrimitiveFunc;
 

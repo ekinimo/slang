@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
@@ -7,7 +7,7 @@ use crate::ast::pool::AstPool;
 use crate::ast::pretty_printer::PrettyPrinter;
 use crate::ast::Ast;
 use crate::checker::type_check::TypeChecker;
-use crate::compiler::executor::CompiledFunctions;
+use crate::compiler::executor::{CompilationContext, CompiledFunctions};
 use crate::parser::parser::parse_program;
 use crate::value::Value;
 
@@ -338,24 +338,27 @@ impl Interpreter {
                 // Prepare a custom function that sets up the arguments and calls the body
                 let arg_values = args.to_vec();
                 let call_func = crate::compiler::function::CompiledFunction::new(
-                    move |mem: &mut Vec<Value>, _: usize| {
+                    move |mem: &mut Vec<Value>| {
                         // Push arguments to memory
                         for arg in &arg_values {
                             mem.push(arg.clone());
                         }
+                        Ok(())
                     },
                     0,
                 );
 
                 // Execute the prepared function
                 let mut memory = Vec::new();
-                call_func.call(&mut memory, 0);
+                call_func.call(&mut memory);
 
-                // Now execute the function body with the prepared arguments
-                if let Some(compiled_body) =
-                    self.compiled_functions.compile_expr(body_idx, &self.pool)
+                let mut ctx = CompilationContext::new();
+
+                if let Some(compiled_body) = self
+                    .compiled_functions
+                    .compile_expr(body_idx, &self.pool, &mut ctx)
                 {
-                    compiled_body.call(&mut memory, 0);
+                    compiled_body.call(&mut memory);
                     match memory.pop() {
                         Some(result) => Ok(result),
                         None => Err(format!("Function '{}' did not return a value", name)),

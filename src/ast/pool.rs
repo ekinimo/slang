@@ -1,9 +1,6 @@
 use crate::ast::indices::{AstIdx, NameIdx, ParamIdx};
 use crate::ast::primitives::PrimitiveFunc;
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::io::{self, BufRead, Write};
 use std::ops::{Index, IndexMut};
 use std::path::Path;
 
@@ -11,7 +8,7 @@ use super::Ast;
 
 #[derive(Debug)]
 pub struct AstPool {
-    nodes: Vec<Ast>,
+    pub nodes: Vec<Ast>,
 
     string_pool: Vec<String>,
     string_map: HashMap<String, NameIdx>,
@@ -124,23 +121,31 @@ impl AstPool {
         node_idx
     }
 
-    pub fn add_call(&mut self, func_idx: AstIdx, child_count: usize) -> AstIdx {
+    pub fn add_call(
+        &mut self,
+        func_idx: AstIdx,
+        child_start: AstIdx,
+        child_count: usize,
+        len: usize,
+    ) -> AstIdx {
         let node_idx = AstIdx(self.nodes.len());
         self.nodes.push(Ast::Call {
             func_idx,
             child_count,
+            child_start,
+            len,
         });
         node_idx
     }
 
-    pub fn add_add(&mut self, child_count: usize) -> AstIdx {
+    pub fn add_add(&mut self, child_start: AstIdx, len: usize) -> AstIdx {
         let id = self.add_primitive_func(PrimitiveFunc::Add);
-        self.add_call(id, 2)
+        self.add_call(id, child_start, 2, len)
     }
 
-    pub fn add_multiply(&mut self, child_count: usize) -> AstIdx {
+    pub fn add_multiply(&mut self, child_start: AstIdx, len: usize) -> AstIdx {
         let id = self.add_primitive_func(PrimitiveFunc::Multiply);
-        self.add_call(id, 2)
+        self.add_call(id, child_start, 2, len)
     }
 
     pub fn add_function_def(&mut self, name: &str, param_count: usize, body_idx: AstIdx) -> AstIdx {
@@ -168,16 +173,7 @@ impl AstPool {
     pub fn len(&self, idx: AstIdx) -> usize {
         match self[idx] {
             Ast::PrimitiveFunc(_) | Ast::UserFunc(_) | Ast::Integer(_) | Ast::ParamRef { .. } => 1,
-            Ast::Call { func_idx, .. } => {
-                let mut total = 1 + self.len(func_idx);
-                if let Some(children) = self.children(idx) {
-                    for child_idx in children {
-                        total += self.len(child_idx);
-                    }
-                }
-
-                total
-            }
+            Ast::Call { len, .. } => len + 1,
             Ast::Lambda { .. } | Ast::FunctionDef { .. } => {
                 1 + if let Some(children) = self.children(idx) {
                     children.iter().map(|&child| self.len(child)).sum()
@@ -189,26 +185,36 @@ impl AstPool {
     }
 
     pub fn children(&self, idx: AstIdx) -> Option<Vec<AstIdx>> {
+        //println!("\tChildren of {idx:?}");
+
         match self[idx] {
             Ast::UserFunc(_) | Ast::PrimitiveFunc(_) | Ast::Integer(_) | Ast::ParamRef { .. } => {
                 None
             }
 
             Ast::Call {
-                func_idx,
                 child_count,
+                child_start,
+                ..
             } => {
-                let mut children = Vec::with_capacity(child_count);
-                let next_len = self.len(func_idx);
-                let mut current_idx = idx.0 - next_len;
+                if child_count > 0 {
+                    let mut children = Vec::with_capacity(child_count);
+                    let mut current_idx = child_start.0;
 
-                for _ in 0..child_count {
-                    let next_child = AstIdx(current_idx - 1);
-                    children.push(next_child);
-                    current_idx -= self.len(next_child);
+                    for _ in 0..child_count {
+                        children.push(current_idx.into());
+                        let my_len = self.len(current_idx.into());
+                        if my_len > current_idx {
+                            println!("Is this fishy? {my_len:?} , {current_idx}");
+                            break;
+                        }
+                        current_idx -= my_len;
+                    }
+                    children.reverse();
+                    Some(children)
+                } else {
+                    None
                 }
-                children.reverse();
-                Some(children)
             }
 
             Ast::FunctionDef { body_idx, .. } | Ast::Lambda { body_idx, .. } => {
@@ -217,14 +223,31 @@ impl AstPool {
         }
     }
 
-    pub fn add_function_call(&mut self, name: &str, child_count: usize) -> AstIdx {
+    pub fn add_function_call(
+        &mut self,
+        name: &str,
+        child_start: AstIdx,
+        child_count: usize,
+        len: usize,
+    ) -> AstIdx {
         if let Some(prim_func) = self.get_primitive_func(name) {
             let func_idx = self.add_primitive_func(prim_func);
-            self.add_call(func_idx, child_count)
+            self.add_call(func_idx, child_start, child_count, len)
         } else {
             let func_idx = self.add_user_func(name);
-            self.add_call(func_idx, child_count)
+            self.add_call(func_idx, child_start, child_count, len)
         }
+    }
+
+    pub fn add_lambda_call(
+        &mut self,
+        name: AstIdx,
+        child_start: AstIdx,
+        child_count: usize,
+
+        len: usize,
+    ) -> AstIdx {
+        self.add_call(name, child_start, child_count, len)
     }
 
     pub fn display(&self) {
@@ -265,10 +288,12 @@ impl AstPool {
                 Ast::Call {
                     func_idx,
                     child_count,
+                    child_start,
+                    len,
                 } => {
                     println!(
-                        "{}: Call {{ func_idx: {}, child_count: {} }}",
-                        i, func_idx.0, child_count
+                        "{}: Call {{ func_idx: {}, child_count: {}, child_start: {}, len: {} }}",
+                        i, func_idx.0, child_count, child_start.0, len
                     )
                 }
                 Ast::FunctionDef {

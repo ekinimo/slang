@@ -1,5 +1,3 @@
-use std::fmt::Pointer;
-
 use crate::CompiledFunction;
 
 #[derive(Clone)]

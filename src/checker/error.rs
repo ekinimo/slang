@@ -1,4 +1,3 @@
-use crate::NameIdx;
 use thiserror::Error;
 
 #[derive(Error, Debug)]

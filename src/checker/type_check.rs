@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::ast::indices::{AstIdx, NameIdx};
 use crate::ast::pool::AstPool;
@@ -28,9 +28,9 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn check_program(&mut self) -> Result<()> {
-        for (&name_idx, &ast_idx) in &self.ast_pool.function_defs {
+        /*for (&name_idx, &ast_idx) in &self.ast_pool.function_defs {
             self.check_function_def(name_idx, ast_idx)?;
-        }
+        }*/
 
         Ok(())
     }
@@ -66,6 +66,8 @@ impl<'a> TypeChecker<'a> {
             Ast::Call {
                 func_idx,
                 child_count,
+                child_start,
+                len,
             } => {
                 self.check_expression(func_idx)?;
 
